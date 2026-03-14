@@ -1,0 +1,28 @@
+# Secrets
+.env
+*.json
+!package.json
+
+# PDF input and OCR output (large files, user-specific)
+book.pdf
+output.md
+raw_ocr_output.md
+
+# Sample images (large, not needed in repo)
+*.png
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
