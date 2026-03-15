@@ -1,163 +1,89 @@
 """
-Convert Markdown to DOCX
-=========================
+Convert Markdown to DOCX using Pandoc
+======================================
 Converts the Markdown OCR output to a Word document with proper formatting.
+Uses pandoc for professional-quality conversion with full table support.
 
 Usage:
-    python convert_to_docx.py
+    python convert_to_docx.py [input.md] [output.docx]
 
-Input: output_proofread.md (or output.md if proofread doesn't exist)
-Output: output.docx
+Defaults:
+    Input: output_proofread.md (or output.md if proofread doesn't exist)
+    Output: output_proofread.docx
 
 Dependencies:
-    pip install python-docx markdown
+    - pandoc (must be installed: brew install pandoc)
 """
 
-import re
 import sys
+import subprocess
 from pathlib import Path
-from docx import Document
-from docx.shared import Pt, Inches, RGBColor
-from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
-import markdown
-from html.parser import HTMLParser
+
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-INPUT_PATH = Path("output_proofread.md")
-FALLBACK_PATH = Path("output.md")
-OUTPUT_PATH = Path("output.docx")
-
-
-# ---------------------------------------------------------------------------
-# Markdown to DOCX converter
-# ---------------------------------------------------------------------------
-class MarkdownToDocx:
-    def __init__(self):
-        self.doc = Document()
-        self.setup_styles()
-
-    def setup_styles(self):
-        """Set default document margins and styles."""
-        sections = self.doc.sections
-        for section in sections:
-            section.top_margin = Inches(1)
-            section.bottom_margin = Inches(1)
-            section.left_margin = Inches(1)
-            section.right_margin = Inches(1)
-
-    def add_heading_1(self, text):
-        """Add a level 1 heading (# in Markdown)."""
-        heading = self.doc.add_heading(text, level=1)
-        heading.runs[0].font.size = Pt(16)
-        heading.runs[0].font.bold = True
-
-    def add_heading_2(self, text):
-        """Add a level 2 heading (## in Markdown)."""
-        heading = self.doc.add_heading(text, level=2)
-        heading.runs[0].font.size = Pt(14)
-        heading.runs[0].font.bold = True
-
-    def add_heading_3(self, text):
-        """Add a level 3 heading (### in Markdown)."""
-        heading = self.doc.add_heading(text, level=3)
-        heading.runs[0].font.size = Pt(12)
-        heading.runs[0].font.bold = True
-
-    def add_paragraph(self, text, indent=0):
-        """Add a regular paragraph with optional indentation."""
-        p = self.doc.add_paragraph(text)
-        p.paragraph_format.left_indent = Inches(indent * 0.25)
-        p.paragraph_format.space_after = Pt(6)
-
-    def add_bullet(self, text, indent=0):
-        """Add a bullet point with optional indentation."""
-        p = self.doc.add_paragraph(text, style='List Bullet')
-        p.paragraph_format.left_indent = Inches(indent * 0.25)
-
-    def add_numbered(self, text, indent=0):
-        """Add a numbered list item with optional indentation."""
-        p = self.doc.add_paragraph(text, style='List Number')
-        p.paragraph_format.left_indent = Inches(indent * 0.25)
-
-    def parse_markdown_line(self, line, prev_line_type=None):
-        """Parse a single line of Markdown and add to document."""
-        stripped = line.strip()
-
-        if not stripped:
-            return None
-
-        # Detect headings
-        if stripped.startswith('# '):
-            self.add_heading_1(stripped[2:])
-            return 'heading1'
-        elif stripped.startswith('## '):
-            self.add_heading_2(stripped[3:])
-            return 'heading2'
-        elif stripped.startswith('### '):
-            self.add_heading_3(stripped[4:])
-            return 'heading3'
-
-        # Detect bullet points
-        elif re.match(r'^[\-\*]\s+', stripped):
-            text = re.sub(r'^[\-\*]\s+', '', stripped)
-            indent = len(line) - len(line.lstrip())
-            self.add_bullet(text, indent // 2)
-            return 'bullet'
-
-        # Detect numbered lists
-        elif re.match(r'^\d+\.\s+', stripped):
-            text = re.sub(r'^\d+\.\s+', '', stripped)
-            indent = len(line) - len(line.lstrip())
-            self.add_numbered(text, indent // 2)
-            return 'numbered'
-
-        # Regular paragraph
-        else:
-            indent = len(line) - len(line.lstrip())
-            self.add_paragraph(stripped, indent // 2)
-            return 'paragraph'
-
-    def convert(self, markdown_text):
-        """Convert full Markdown text to DOCX."""
-        lines = markdown_text.split('\n')
-        prev_type = None
-
-        for line in lines:
-            prev_type = self.parse_markdown_line(line, prev_type)
-
-    def save(self, output_path):
-        """Save the document."""
-        self.doc.save(output_path)
+DEFAULT_INPUT = Path("output_proofread.md")
+FALLBACK_INPUT = Path("output.md")
+DEFAULT_OUTPUT = Path("output_proofread.docx")
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
-    # Determine input file
-    if INPUT_PATH.exists():
-        input_file = INPUT_PATH
-        print(f"Using proofread version: {input_file}")
-    elif FALLBACK_PATH.exists():
-        input_file = FALLBACK_PATH
-        print(f"Proofread version not found, using: {input_file}")
+    # Parse command line arguments
+    if len(sys.argv) == 3:
+        input_path = Path(sys.argv[1])
+        output_path = Path(sys.argv[2])
+    elif len(sys.argv) == 2:
+        input_path = Path(sys.argv[1])
+        output_path = DEFAULT_OUTPUT
     else:
-        print(f"Error: No input file found. Run ocr_book.py first.")
+        # Use defaults
+        if DEFAULT_INPUT.exists():
+            input_path = DEFAULT_INPUT
+            print(f"Using proofread version: {input_path}")
+        elif FALLBACK_INPUT.exists():
+            input_path = FALLBACK_INPUT
+            print(f"Proofread version not found, using: {input_path}")
+        else:
+            print(f"Error: No input file found. Run ocr_book.py first.")
+            sys.exit(1)
+        output_path = DEFAULT_OUTPUT
+
+    # Check if input exists
+    if not input_path.exists():
+        print(f"Error: Input file not found: {input_path}")
         sys.exit(1)
 
-    # Read Markdown
-    print(f"Reading Markdown from {input_file}...")
-    markdown_text = input_file.read_text(encoding='utf-8')
+    # Check if pandoc is installed
+    try:
+        subprocess.run(['pandoc', '--version'],
+                      capture_output=True, check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("Error: pandoc is not installed.")
+        print("Install with: brew install pandoc")
+        sys.exit(1)
 
-    # Convert to DOCX
-    print(f"Converting to DOCX...")
-    converter = MarkdownToDocx()
-    converter.convert(markdown_text)
-    converter.save(OUTPUT_PATH)
+    # Convert using pandoc
+    print(f"Converting {input_path} to {output_path} using pandoc...")
 
-    print(f"\nDone! Word document saved to {OUTPUT_PATH}")
+    try:
+        subprocess.run([
+            'pandoc',
+            str(input_path),
+            '-o', str(output_path),
+            '--from', 'markdown',
+            '--to', 'docx'
+        ], check=True)
+
+        print(f"✓ Successfully created {output_path}")
+        print(f"  File size: {output_path.stat().st_size / 1024:.1f} KB")
+
+    except subprocess.CalledProcessError as e:
+        print(f"Error: pandoc conversion failed: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
