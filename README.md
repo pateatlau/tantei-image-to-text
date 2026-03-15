@@ -10,7 +10,7 @@ The free tier (250 requests/day) is sufficient for most documents.
 
 ## Prerequisites
 
-- Python 3.10+
+- **Python 3.10+** (for Python version) OR **Node.js 18+** (for TypeScript version)
 - macOS / Linux
 - [Poppler](https://poppler.freedesktop.org/) for PDF rendering
 - A Google Gemini API key (free)
@@ -55,8 +55,15 @@ GEMINI_API_KEY=your-actual-key-here
 
 Place your PDF in the project directory as `book.pdf`, then run:
 
+### Python version
 ```bash
 python ocr_book.py
+```
+
+### TypeScript version
+```bash
+npm install
+npm run dev    # or: npm run build && npm start
 ```
 
 Output is saved to `output.md`.

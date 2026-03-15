@@ -15,10 +15,14 @@ raw_ocr_output.md
 __pycache__/
 *.py[cod]
 *.egg-info/
-dist/
-build/
 .venv/
 venv/
+
+# Node.js
+node_modules/
+dist/
+*.log
+temp_images/
 
 # macOS
 .DS_Store

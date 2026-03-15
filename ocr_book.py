@@ -43,7 +43,7 @@ OUTPUT_PATH = Path("output.md")
 OCR_DPI = 300
 PAGE_CHUNK_SIZE = 5
 MODEL_NAME = "gemini-2.5-flash"
-MAX_PAGES = 5                    # Set to None for all pages
+MAX_PAGES = None                   # Set to None for all pages
 REQUESTS_PER_MINUTE = 9         # Stay under free tier limit of 10 RPM
 
 
