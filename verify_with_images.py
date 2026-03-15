@@ -41,80 +41,68 @@ load_dotenv()
 INPUT_PATH = Path("output_proofread.md")
 FALLBACK_PATH = Path("output.md")
 OUTPUT_PATH = Path("output_verified.md")
+PROGRESS_PATH = Path("_verify_progress.md")  # Incremental saves
 IMAGES_DIR = Path("pages")
 DIFF_PATH = Path("verification_comparison.txt")
 
-MODEL_NAME = "gemini-2.5-pro"  # Use Pro for verification (better accuracy)
-CHUNK_SIZE = 5  # Pages per chunk (with images, need smaller chunks)
-REQUESTS_PER_MINUTE = 2  # Conservative for Pro tier
+MODEL_NAME = "gemini-2.5-flash"
+REQUESTS_PER_MINUTE = 10  # Free tier: 15 RPM, stay under
+API_TIMEOUT = 120  # seconds per request
+PDF_PATH = Path("book.pdf")
 
-VERIFICATION_PROMPT = """You are verifying a handwritten document transcription.
+VERIFICATION_PROMPT = """You are verifying a transcription of a handwritten page against the original image.
 
-You will receive:
-1. An IMAGE of the original handwritten page
-2. The TRANSCRIPTION of that page (from OCR)
+CRITICAL RULES:
+1. You MUST preserve the EXACT structure of the transcription provided.
+2. You MUST keep all "## Page N" markers exactly as they appear.
+3. You MUST keep all Markdown formatting (# headings, - bullets, 1. numbered lists, | tables |).
+4. You MUST NOT add, remove, or reorder any sections or headings.
+5. You MUST NOT paraphrase, rewrite, or restructure any sentence.
+6. You MUST NOT add commentary or explanations.
 
-Your task:
-- Compare the transcription carefully with the handwritten image
-- Correct any OCR errors you find
-- Preserve the original wording and structure
-- Do NOT paraphrase or rewrite sentences
-- Do NOT add interpretations or extra content
-- Preserve all Markdown formatting (headings, lists, tables, etc.)
+YOUR ONLY JOB: Compare each word in the transcription against the handwriting in the image and fix:
+- Misspelled words (e.g., "gavernance" → "governance")
+- Wrong words (where the OCR misread the handwriting)
+- Missing words (small words like "the", "a", "of", "in" that the OCR dropped)
+- Extra words (words the OCR hallucinated that are NOT in the handwriting)
 
-Common OCR errors to watch for:
-- Dropped small words ("the", "a", "of", etc.)
-- Word substitutions (similar-looking words)
-- Missing punctuation
-- Incorrect capitalization
-- Table formatting issues
+If a line is already correct, return it UNCHANGED — same words, same formatting, same indentation.
 
-If the transcription is already correct, return it unchanged.
-
-Return ONLY the corrected Markdown. No explanations, no commentary."""
+Return ONLY the corrected transcription in Markdown. Nothing else."""
 
 
 # ---------------------------------------------------------------------------
 # Helper Functions
 # ---------------------------------------------------------------------------
-def split_into_page_chunks(text, pages_per_chunk):
-    """Split document into chunks by page markers."""
+def split_into_pages(text):
+    """Split document into individual pages by page markers."""
     page_pattern = r'^## Page (\d+)$'
     lines = text.split('\n')
 
-    chunks = []
-    current_chunk = []
-    current_pages = []
-    pages_in_chunk = 0
+    pages = []
+    current_page = []
+    current_num = None
 
     for line in lines:
         match = re.match(page_pattern, line)
         if match:
-            page_num = int(match.group(1))
-            if pages_in_chunk >= pages_per_chunk and current_chunk:
-                # Save chunk
-                chunks.append({
-                    'text': '\n'.join(current_chunk),
-                    'pages': current_pages
+            if current_page and current_num is not None:
+                pages.append({
+                    'text': '\n'.join(current_page),
+                    'page_num': current_num
                 })
-                current_chunk = [line]
-                current_pages = [page_num]
-                pages_in_chunk = 1
-            else:
-                current_chunk.append(line)
-                current_pages.append(page_num)
-                pages_in_chunk += 1
+            current_page = [line]
+            current_num = int(match.group(1))
         else:
-            current_chunk.append(line)
+            current_page.append(line)
 
-    # Add remaining content
-    if current_chunk:
-        chunks.append({
-            'text': '\n'.join(current_chunk),
-            'pages': current_pages
+    if current_page and current_num is not None:
+        pages.append({
+            'text': '\n'.join(current_page),
+            'page_num': current_num
         })
 
-    return chunks
+    return pages
 
 
 def extract_pages_from_pdf(pdf_path, page_numbers, images_dir):
@@ -208,20 +196,12 @@ def create_comparison(original, verified):
 # Main
 # ---------------------------------------------------------------------------
 def main():
-    # Check for PDF (we'll extract images on-the-fly)
-    pdf_path = Path("book.pdf")
-    if not pdf_path.exists():
-        print(f"Error: PDF not found: {pdf_path}")
-        print("The PDF is required to extract page images for verification.")
+    if not PDF_PATH.exists():
+        print(f"Error: PDF not found: {PDF_PATH}")
         sys.exit(1)
 
-    # Check for images directory, create if needed
-    if not IMAGES_DIR.exists():
-        print(f"Images directory not found. Will extract pages from PDF...")
-        IMAGES_DIR.mkdir(exist_ok=True)
-        extract_needed = True
-    else:
-        extract_needed = False
+    # Create images directory if needed
+    IMAGES_DIR.mkdir(exist_ok=True)
 
     # Determine input file
     if INPUT_PATH.exists():
@@ -239,97 +219,130 @@ def main():
         print("Error: GEMINI_API_KEY is not set.")
         sys.exit(1)
 
-    print(f"\n{'='*60}")
-    print(f"IMAGE VERIFICATION PIPELINE")
-    print(f"{'='*60}")
-    print(f"Input: {input_file}")
-    print(f"Images: {IMAGES_DIR}")
-    print(f"Model: {MODEL_NAME}")
-    print(f"Chunk size: {CHUNK_SIZE} pages")
-    print(f"{'='*60}\n")
-
     # Read input
     print(f"Reading transcription from {input_file}...")
     input_text = input_file.read_text(encoding='utf-8')
 
-    # Split into chunks
-    print(f"Splitting document into chunks...")
-    chunks = split_into_page_chunks(input_text, CHUNK_SIZE)
-    print(f"Total chunks: {len(chunks)}")
+    # Split into individual pages
+    print(f"Splitting document into pages...")
+    pages = split_into_pages(input_text)
+    print(f"Total pages: {len(pages)}")
 
-    # Process each chunk
+    print(f"\n{'='*60}")
+    print(f"IMAGE VERIFICATION PIPELINE")
+    print(f"{'='*60}")
+    print(f"Input:  {input_file}")
+    print(f"Pages:  {len(pages)}")
+    print(f"Model:  {MODEL_NAME}")
+    print(f"Output: {OUTPUT_PATH}")
+    print(f"{'='*60}\n")
+
+    # Check for resume from progress file
     client = genai.Client(api_key=api_key)
-    verified_chunks = []
+    verified_pages = []
+    start_idx = 0
 
-    for i, chunk in enumerate(chunks, 1):
-        pages = chunk['pages']
-        text = chunk['text']
+    if PROGRESS_PATH.exists():
+        progress_text = PROGRESS_PATH.read_text(encoding='utf-8')
+        # Count how many pages we already have
+        existing_pages = re.findall(r'^## Page \d+', progress_text, re.MULTILINE)
+        if existing_pages:
+            start_idx = len(existing_pages)
+            # Re-split progress into page chunks
+            for page in pages[:start_idx]:
+                pattern = rf'(## Page {page["page_num"]}\n.*?)(?=\n## Page \d+|\Z)'
+                match = re.search(pattern, progress_text, re.DOTALL)
+                if match:
+                    verified_pages.append(match.group(1).strip())
+                else:
+                    verified_pages.append(page['text'])
+            print(f"Resuming from page {start_idx + 1} (found {start_idx} pages in progress file)")
 
-        print(f"\nChunk {i}/{len(chunks)} - Pages {pages[0]}-{pages[-1]}...")
-
-        # Load images
-        images = load_page_images(pages, IMAGES_DIR, pdf_path)
-        if not images:
-            print(f"  ⚠ No images found, using original text")
-            verified_chunks.append(text)
+    # Process each page individually
+    for i, page in enumerate(pages):
+        if i < start_idx:
             continue
 
-        print(f"  Loaded {len(images)} images")
+        page_num = page['page_num']
+        page_text = page['text']
+
+        print(f"Page {page_num} ({i+1}/{len(pages)})...", end=" ", flush=True)
 
         # Rate limiting
-        if i > 1:
+        if i > start_idx:
             wait_time = 60 / REQUESTS_PER_MINUTE
-            print(f"  Rate limiting: waiting {wait_time:.1f}s...")
             time.sleep(wait_time)
 
-        # Verify with images
+        # Load page image from PDF
+        image_path = IMAGES_DIR / f"page_{page_num:03d}.png"
+        if not image_path.exists():
+            try:
+                imgs = convert_from_path(PDF_PATH, dpi=300,
+                                         first_page=page_num, last_page=page_num)
+                imgs[0].save(image_path, 'PNG')
+            except Exception as e:
+                print(f"⚠ Image extraction failed: {e}, using original")
+                verified_pages.append(page_text)
+                continue
+
+        try:
+            image = Image.open(image_path)
+        except Exception as e:
+            print(f"⚠ Image load failed: {e}, using original")
+            verified_pages.append(page_text)
+            continue
+
+        # Verify with image
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                # Build content list: prompt + images + transcription
-                contents = [VERIFICATION_PROMPT]
-
-                for idx, img in enumerate(images):
-                    contents.append(f"\n--- PAGE {pages[idx]} IMAGE ---")
-                    contents.append(img)
-
-                contents.append(f"\n\n--- TRANSCRIPTION TO VERIFY ---\n\n{text}")
-
                 response = client.models.generate_content(
                     model=MODEL_NAME,
-                    contents=contents,
+                    contents=[
+                        VERIFICATION_PROMPT,
+                        image,
+                        f"\n--- TRANSCRIPTION TO VERIFY ---\n\n{page_text}"
+                    ],
                     config=types.GenerateContentConfig(
-                        temperature=0.1,  # Very low for faithful verification
+                        temperature=0.0,
+                        http_options={'timeout': API_TIMEOUT * 1000},
                     ),
                 )
 
                 if response.text is None:
-                    raise ValueError("API returned empty response")
+                    raise ValueError("Empty response")
 
                 verified_text = response.text.strip()
-
-                # Strip code fences
                 verified_text = re.sub(r'^```(?:markdown)?\s*\n', '', verified_text)
                 verified_text = re.sub(r'\n```\s*$', '', verified_text)
 
-                verified_chunks.append(verified_text)
-                print(f"  ✓ Verified ({len(verified_text)} chars)")
+                # Sanity check: reject if output is way too large (hallucination)
+                if len(verified_text) > len(page_text) * 3:
+                    print(f"⚠ output too large ({len(verified_text)} chars), using original")
+                    verified_pages.append(page_text)
+                else:
+                    verified_pages.append(verified_text)
+                    print(f"✓ ({len(verified_text)} chars)")
                 break
 
             except Exception as e:
                 if attempt < max_retries - 1:
-                    print(f"  ⚠ Retry {attempt + 1}/{max_retries} - Error: {e}")
-                    time.sleep(5)
+                    print(f"⚠ retry {attempt+1}...", end=" ", flush=True)
+                    time.sleep(10)
                 else:
-                    print(f"  ✗ Failed after {max_retries} attempts: {e}")
-                    print(f"  Using original text as fallback...")
-                    verified_chunks.append(text)
+                    print(f"✗ failed, using original")
+                    verified_pages.append(page_text)
 
-    # Merge chunks
-    print(f"\nMerging {len(verified_chunks)} verified chunks...")
-    verified_text = "\n\n".join(verified_chunks)
+        # Save progress incrementally every 10 pages
+        if (i + 1) % 10 == 0:
+            progress = "\n\n".join(verified_pages)
+            PROGRESS_PATH.write_text(progress, encoding='utf-8')
+            print(f"  [progress saved: {i+1}/{len(pages)} pages]")
 
-    # Write output
+    # Merge pages
+    print(f"\nMerging {len(verified_pages)} verified pages...")
+    verified_text = "\n\n".join(verified_pages)
+
     print(f"Writing verified output to {OUTPUT_PATH}...")
     OUTPUT_PATH.write_text(verified_text, encoding='utf-8')
 
@@ -337,6 +350,10 @@ def main():
     print(f"Creating comparison file at {DIFF_PATH}...")
     comparison = create_comparison(input_text, verified_text)
     DIFF_PATH.write_text(comparison, encoding='utf-8')
+
+    # Clean up progress file
+    if PROGRESS_PATH.exists():
+        PROGRESS_PATH.unlink()
 
     print(f"\n{'='*60}")
     print(f"✓ Verification complete!")
