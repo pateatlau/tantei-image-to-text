@@ -1,6 +1,6 @@
 # Tantei - Handwritten PDF to Markdown + DOCX
 
-Converts handwritten PDF documents into structured Markdown and formatted DOCX using Google Gemini 2.5 Flash.
+Converts handwritten PDF documents into structured Markdown and formatted DOCX using Google Gemini 2.5 Flash with dual OCR and disagreement resolution for high accuracy.
 
 ## Why Gemini?
 
@@ -13,15 +13,20 @@ The free tier (250 requests/day) is sufficient for most documents.
 ```
 book.pdf
   │
-  ├─ ocr_book.py ──────────► output.md           (raw OCR)
+  ├─ ocr_book.py ──────────► output.md           (dual OCR + resolver)
+  │    ├─ image preprocessing (grayscale, blur, upscale)
+  │    ├─ OCR pass A (structure-focused prompt)
+  │    ├─ OCR pass B (character-focused prompt)
+  │    ├─ disagreement resolver (picks best reading)
+  │    └─ named entity correction
   │
   ├─ proofread.py ─────────► output_proofread.md  (chunked proofreading via Gemini)
   │
   ├─ verify_with_images.py ► output_verified.md   (optional: image-aware verification)
   │
-  ├─ postprocess_markdown.py ► output_final.md    (formatting fixes for DOCX)
+  ├─ postprocess_markdown.py ► output_final.md    (15-step formatting normalization)
   │
-  └─ pandoc + format_docx.py ► output_final.docx  (formatted Word document)
+  └─ convert_to_docx.py + format_docx.py ► output_final.docx  (formatted Word document)
 ```
 
 ## Prerequisites
@@ -78,9 +83,11 @@ Place your PDF in the project directory as `book.pdf`.
 python ocr_book.py
 ```
 
-Converts each page to an image, sends it to Gemini, and writes `output.md`.
+Converts each page to an image, preprocesses it (grayscale + blur + upscale), runs two independent OCR passes with different prompts, and resolves disagreements against the original image. Applies named entity correction and writes `output.md`.
 
-For testing, `MAX_PAGES` is set to 5. Set `MAX_PAGES = None` in `ocr_book.py` for the full document.
+Set `ENABLE_DUAL_OCR = False` for single-pass mode (faster, fewer API calls).
+
+For testing, set `MAX_PAGES = 5` in `ocr_book.py`. Set `MAX_PAGES = None` for the full document.
 
 ### Step 2: Proofread
 
@@ -104,18 +111,22 @@ This step is optional and experimental — see [Notes on image verification](#no
 
 ```bash
 python postprocess_markdown.py
-pandoc output_final.md -o output_final.docx --from markdown --to docx --reference-doc=reference.docx
+python convert_to_docx.py
 python format_docx.py
 ```
 
-The post-processing step fixes markdown formatting for clean DOCX rendering:
-- Ensures blank lines before headings (required by pandoc)
+The post-processing step runs 15 normalization passes:
+- Normalizes heading styles (trailing `#`, extra spaces)
+- Ensures blank lines before headings and lists
 - Removes `## Page N` markers
-- Fixes `<br>` tags in tables (not supported by pandoc)
-- Converts letter-style lists (a, b, c) to numbered lists
-- Fixes list nesting and spacing
+- Fixes `<br>` tags and inline bullet lists in tables
+- Normalizes list markers (`*` to `-`)
+- Converts letter lists (a, b, c) to numbered lists
+- Fixes double dashes, heading markers inside list items
+- Joins fragmented list items and orphaned continuation lines
+- Fixes list nesting and cleans stray markers
 
-The formatting step adds:
+The DOCX conversion uses Pandoc with extended Markdown support (`pipe_tables+grid_tables`) and the `reference.docx` template. The formatting step adds:
 - Visible borders on all tables
 - Document header with title and bottom border
 - Page footer with "Page X of Y pages" and top border
@@ -124,12 +135,12 @@ The formatting step adds:
 
 | Script | Purpose |
 |--------|---------|
-| `ocr_book.py` | Main OCR pipeline — PDF to Markdown via Gemini |
+| `ocr_book.py` | Dual OCR pipeline with preprocessing and entity correction |
 | `proofread.py` | Chunked proofreading of OCR output via Gemini |
 | `verify_with_images.py` | Image-aware verification (page image + transcription) |
 | `verify_sample.py` | Quick 5-page sample test for the verification pipeline |
-| `postprocess_markdown.py` | Markdown formatting fixes for DOCX conversion |
-| `convert_to_docx.py` | Simple pandoc wrapper for Markdown to DOCX |
+| `postprocess_markdown.py` | 15-step Markdown normalization for DOCX conversion |
+| `convert_to_docx.py` | Pandoc wrapper with reference template and extended Markdown |
 | `format_docx.py` | DOCX post-processing (table borders, header, footer) |
 
 ## Configuration
@@ -141,20 +152,33 @@ Key settings in `ocr_book.py`:
 | `PDF_PATH` | `book.pdf` | Input PDF file |
 | `OUTPUT_PATH` | `output.md` | Output Markdown file |
 | `OCR_DPI` | `300` | DPI for PDF rendering |
-| `MAX_PAGES` | `5` | Pages to process (`None` for all) |
+| `MAX_PAGES` | `None` | Pages to process (`None` for all) |
 | `MODEL_NAME` | `gemini-2.5-flash` | Gemini model to use |
 | `REQUESTS_PER_MINUTE` | `9` | Rate limit (free tier allows 10) |
+| `ENABLE_DUAL_OCR` | `True` | Use dual OCR + resolver (3 calls/page) |
+| `ENABLE_PREPROCESSING` | `True` | Apply image preprocessing before OCR |
 
 ## How it works
 
 1. **PDF to images** — Converts each page to a 300 DPI image using `pdf2image` (poppler)
-2. **Gemini OCR** — Sends each page image to Gemini 2.5 Flash with a domain-aware prompt
-3. **Post-processing** — Strips code fences, removes duplicate lines
-4. **Markdown output** — Writes structured output with page separators
-5. **Proofreading** — Processes in 15-page chunks to stay within token limits, with retry logic and rate limiting
-6. **DOCX conversion** — Pandoc handles markdown-to-DOCX with a reference document for styling, then python-docx adds table borders, header, and footer
+2. **Image preprocessing** — Grayscale conversion, Gaussian blur (3x3), 1.3x upscale via OpenCV for cleaner character recognition
+3. **Dual OCR** — Two independent OCR passes with different prompts (structure-focused and character-focused) encourage different interpretations of ambiguous handwriting
+4. **Disagreement resolution** — When the two passes disagree, a resolver prompt receives both transcriptions plus the original image and picks the most accurate reading
+5. **Named entity correction** — Dictionary-based correction of common OCR misspellings for domain-specific proper nouns and terms
+6. **Proofreading** — Processes in 15-page chunks with retry logic and rate limiting
+7. **Markdown normalization** — 15-step post-processing pipeline fixes formatting for clean DOCX rendering
+8. **DOCX conversion** — Pandoc with `reference.docx` template and extended Markdown, then python-docx adds table borders, header, and footer
 
-The OCR prompt includes domain context (Indian civil services, ethics, governance) to help the model resolve ambiguous handwriting. Update the `DOMAIN CONTEXT` section in `OCR_PROMPT` for other document types.
+The OCR prompts include domain context (Indian civil services, ethics, governance) to help the model resolve ambiguous handwriting. Update the `DOMAIN CONTEXT` sections in `OCR_PROMPT_A` and `OCR_PROMPT_B` for other document types.
+
+## Performance
+
+| Metric | Single OCR | Dual OCR |
+|--------|-----------|----------|
+| API calls/page | 1 | 3 |
+| Time/page (at 9 RPM) | ~7s | ~50s |
+| 104-page document | ~15 min | ~86 min |
+| Expected accuracy | ~97-98% | ~99% |
 
 ## Notes on image verification
 
@@ -168,7 +192,7 @@ The script includes safeguards (sanity checks for output size, incremental saves
 
 ## Costs
 
-Gemini 2.5 Flash free tier: 10 requests/min, 250 requests/day. A 150-page PDF fits within the free daily limit. The full pipeline (OCR + proofreading) requires ~2x the page count in API calls.
+Gemini 2.5 Flash free tier: 10 requests/min, 250 requests/day. In dual OCR mode, a 104-page PDF needs ~312 API calls (over the daily limit — may need to split across days or use a paid plan). In single OCR mode, the full pipeline (OCR + proofreading) needs ~110 calls and fits within the free daily limit.
 
 ## License
 
