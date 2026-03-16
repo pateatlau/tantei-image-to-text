@@ -6,10 +6,20 @@
 # PDF input and OCR output (large files, user-specific)
 book.pdf
 output.md
+output_*.md
+output_*.docx
+output_*.pdf
 raw_ocr_output.md
+*_comparison.txt
+
+# Progress files
+_verify_progress.md
 
 # Sample images (large, not needed in repo)
 *.png
+
+# Pages directory (extracted page images)
+pages/
 
 # Python
 __pycache__/
